@@ -30,7 +30,8 @@ while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
   echo "Waiting for dpkg lock to be released..."
   sleep 5
 done
-apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null
+apt-get update -qq && apt-get upgrade -y -qq > /dev/null
+apt-get install -y -qq ffmpeg > /dev/null
 
 # Create a virtual environment for JupyterLab (PEP 668 compliance).
 python3 -m venv /opt/wakeword/venv
