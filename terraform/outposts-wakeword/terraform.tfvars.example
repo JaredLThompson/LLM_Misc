@@ -1,0 +1,25 @@
+aws_region         = "us-west-2"
+availability_zone  = "us-west-2a"
+outpost_arn        = "arn:aws:outposts:us-west-2:123456789012:outpost/op-0123456789abcdef0"
+
+# Null selects the newest AWS-owned x86-64 Single CUDA DLAMI for Ubuntu 24.04.
+# Set an explicit ID to pin deployments to a tested image.
+ami_id = null
+
+# Use the exact size currently configured and launchable on the Outpost.
+instance_type = "g4dn.24xlarge"
+
+vpc_cidr           = "10.80.0.0/16"
+outpost_subnet_cidr = "10.80.1.0/24"
+
+# Optional LGW route. Leave both null when routing is managed separately.
+local_gateway_id = null
+on_premises_cidr = null
+
+root_volume_size_gib = 200
+
+tags = {
+  Application = "wakeword-training"
+  Environment = "lab"
+  ManagedBy   = "terraform"
+}
