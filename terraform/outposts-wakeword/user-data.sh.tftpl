@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CACHE_BUCKET="${cache_bucket_name}"
+
+install -d -m 0755 /opt/wakeword
+install -d -m 0755 /opt/wakeword/cache
+install -d -m 0755 /opt/wakeword/runs
+install -d -m 0755 /opt/wakeword/artifacts
+
+# Deep Learning and current Ubuntu/Amazon Linux AMIs normally include SSM
+# Agent. Enable whichever installation layout the selected AMI provides.
+if systemctl list-unit-files amazon-ssm-agent.service >/dev/null 2>&1; then
+  systemctl enable --now amazon-ssm-agent
+elif command -v snap >/dev/null 2>&1 &&
+     snap list amazon-ssm-agent >/dev/null 2>&1; then
+  snap start amazon-ssm-agent
+fi
+
+# Sync cached training assets from S3 if a cache bucket is configured.
+if [ -n "$CACHE_BUCKET" ]; then
+  echo "Syncing training assets from s3://$CACHE_BUCKET/content/ ..."
+  aws s3 sync "s3://$CACHE_BUCKET/content/" /content/ --quiet || \
+    echo "WARNING: S3 cache sync failed or bucket is empty; continuing without cache."
+fi
+
+# Install system dependencies for torchaudio/torchcodec.
+apt-get update -qq && apt-get install -y -qq ffmpeg > /dev/null
+
+# Create a virtual environment for JupyterLab (PEP 668 compliance).
+python3 -m venv /opt/wakeword/venv
+/opt/wakeword/venv/bin/pip install --quiet jupyterlab ipywidgets jupyter-resource-usage
+/opt/wakeword/venv/bin/pip install --quiet 'setuptools<70' torchcodec soundfile
+
+# Clone the notebook repository into /content so working directory matches
+# the notebook's Colab-oriented paths.
+install -d -m 0755 /content
+git clone https://github.com/JaredLThompson/LLM_Misc.git /content/LLM_Misc
+ln -sf /content/LLM_Misc/notebooks/*.ipynb /content/
+
+# Set JupyterLab dark mode as default.
+install -d -m 0755 /root/.jupyter/lab/user-settings/@jupyterlab/apputils-extension
+cat > /root/.jupyter/lab/user-settings/@jupyterlab/apputils-extension/themes.jupyterlab-settings <<'EOF'
+{
+    "theme": "JupyterLab Dark"
+}
+EOF
+
+# Enable CPU tracking for jupyter-resource-usage.
+install -d -m 0755 /root/.jupyter
+cat > /root/.jupyter/jupyter_server_config.py <<'EOF'
+c.ResourceUseDisplay.track_cpu_percent = True
+EOF
+
+# Create a systemd unit so Jupyter survives reboots and is manageable.
+cat > /etc/systemd/system/jupyter.service <<'EOF'
+[Unit]
+Description=JupyterLab for wake-word training
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/wakeword/venv/bin/jupyter lab \
+  --ip=0.0.0.0 \
+  --port=8888 \
+  --no-browser \
+  --allow-root \
+  --ServerApp.token='' \
+  --ServerApp.password='' \
+  --notebook-dir=/content
+Restart=on-failure
+RestartSec=5
+Environment="PATH=/opt/wakeword/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now jupyter

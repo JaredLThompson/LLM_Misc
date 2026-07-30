@@ -95,3 +95,9 @@ variable "tags" {
     ManagedBy   = "terraform"
   }
 }
+
+variable "cache_bucket_name" {
+  description = "Optional S3 bucket name for caching training assets. Null disables S3 cache sync on boot."
+  type        = string
+  default     = null
+}

@@ -110,6 +110,14 @@ resource "aws_security_group" "training" {
   description = "No-ingress security group for the SSM-managed wake-word trainer"
   vpc_id      = aws_vpc.this.id
 
+  ingress {
+    description = "All traffic from admin IP"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["136.63.51.188/32"]
+  }
+
   egress {
     description = "Outbound access for SSM, package repositories, GitHub, and training datasets"
     from_port   = 0
@@ -141,6 +149,78 @@ resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
+# --- S3 cache bucket and access policy (optional) ---
+
+resource "aws_s3_bucket" "cache" {
+  count  = var.cache_bucket_name != null ? 1 : 0
+  bucket = var.cache_bucket_name
+
+  tags = {
+    Name = "${var.name}-cache"
+  }
+}
+
+resource "aws_s3_bucket_versioning" "cache" {
+  count  = var.cache_bucket_name != null ? 1 : 0
+  bucket = aws_s3_bucket.cache[0].id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "cache" {
+  count  = var.cache_bucket_name != null ? 1 : 0
+  bucket = aws_s3_bucket.cache[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_public_access_block" "cache" {
+  count  = var.cache_bucket_name != null ? 1 : 0
+  bucket = aws_s3_bucket.cache[0].id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+data "aws_iam_policy_document" "s3_cache_access" {
+  count = var.cache_bucket_name != null ? 1 : 0
+
+  statement {
+    sid    = "ListCacheBucket"
+    effect = "Allow"
+    actions = [
+      "s3:ListBucket",
+    ]
+    resources = [aws_s3_bucket.cache[0].arn]
+  }
+
+  statement {
+    sid    = "ReadWriteCacheObjects"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+      "s3:DeleteObject",
+    ]
+    resources = ["${aws_s3_bucket.cache[0].arn}/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "s3_cache_access" {
+  count  = var.cache_bucket_name != null ? 1 : 0
+  name   = "${var.name}-s3-cache"
+  role   = aws_iam_role.training.id
+  policy = data.aws_iam_policy_document.s3_cache_access[0].json
+}
+
 resource "aws_iam_instance_profile" "training" {
   name_prefix = "${var.name}-"
   role        = aws_iam_role.training.name
@@ -158,7 +238,9 @@ resource "aws_instance" "training" {
   iam_instance_profile        = aws_iam_instance_profile.training.name
   associate_public_ip_address = true
 
-  user_data = file("${path.module}/user-data.sh")
+  user_data = templatefile("${path.module}/user-data.sh.tftpl", {
+    cache_bucket_name = var.cache_bucket_name != null ? var.cache_bucket_name : ""
+  })
 
   metadata_options {
     http_endpoint               = "enabled"
