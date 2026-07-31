@@ -35,7 +35,7 @@ apt-get install -y -qq ffmpeg > /dev/null
 
 # Create a virtual environment for JupyterLab (PEP 668 compliance).
 python3 -m venv /opt/wakeword/venv
-/opt/wakeword/venv/bin/pip install --quiet jupyterlab ipywidgets jupyter-resource-usage
+/opt/wakeword/venv/bin/pip install --quiet jupyterlab ipywidgets jupyter-resource-usage jupyterlab-execute-time
 /opt/wakeword/venv/bin/pip install --quiet 'setuptools<70' torchcodec soundfile
 
 # Clone the notebook repository into /content so working directory matches
