@@ -42,3 +42,23 @@ output "ssm_start_session_command" {
   description = "AWS CLI command used to start a Session Manager shell."
   value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.training.id}"
 }
+
+output "ssm_jupyter_tunnel_command" {
+  description = "AWS CLI command that forwards local port 8889 to the instance-local Jupyter service."
+  value       = "aws ssm start-session --region ${var.aws_region} --target ${aws_instance.training.id} --document-name AWS-StartPortForwardingSession --parameters '{\"portNumber\":[\"8888\"],\"localPortNumber\":[\"8889\"]}'"
+}
+
+output "ssh_private_key_secret_arn" {
+  description = "Secrets Manager ARN containing the Terraform-generated SSH private key."
+  value       = aws_secretsmanager_secret.ssh_private_key.arn
+}
+
+output "ssh_private_key_download_command" {
+  description = "AWS CLI command that retrieves the SSH private key to a local file; protect it with chmod 600."
+  value       = "aws secretsmanager get-secret-value --region ${var.aws_region} --secret-id ${aws_secretsmanager_secret.ssh_private_key.arn} --query SecretString --output text > wakeword-training.pem && chmod 600 wakeword-training.pem"
+}
+
+output "ssh_jupyter_tunnel_command" {
+  description = "SSH command that forwards local port 8889 to Jupyter on the instance."
+  value       = "ssh -i wakeword-training.pem -N -L 8889:127.0.0.1:8888 ubuntu@${aws_instance.training.public_ip}"
+}

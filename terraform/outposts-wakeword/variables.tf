@@ -101,3 +101,31 @@ variable "cache_bucket_name" {
   type        = string
   default     = null
 }
+
+variable "ssh_ingress_cidr" {
+  description = "Administrator IPv4 CIDR permitted to connect to SSH. Use a single trusted address (/32); null disables SSH ingress."
+  type        = string
+  default     = null
+
+  validation {
+    condition     = var.ssh_ingress_cidr == null || (can(cidrhost(var.ssh_ingress_cidr, 0)) && endswith(var.ssh_ingress_cidr, "/32"))
+    error_message = "ssh_ingress_cidr must be null or a valid single-host IPv4 /32 CIDR."
+  }
+}
+
+variable "ssh_private_key_kms_key_id" {
+  description = "Optional KMS key ARN or ID used to encrypt the generated SSH private key in Secrets Manager."
+  type        = string
+  default     = null
+}
+
+variable "ssh_private_key_recovery_window_days" {
+  description = "Secrets Manager recovery window for the generated SSH private key."
+  type        = number
+  default     = 7
+
+  validation {
+    condition     = var.ssh_private_key_recovery_window_days >= 7 && var.ssh_private_key_recovery_window_days <= 30
+    error_message = "ssh_private_key_recovery_window_days must be between 7 and 30."
+  }
+}
