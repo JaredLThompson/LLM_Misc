@@ -35,6 +35,35 @@ locals {
   resolved_ami_id = coalesce(var.ami_id, try(data.aws_ami.gpu[0].id, null))
 }
 
+resource "tls_private_key" "ssh" {
+  algorithm = "ED25519"
+}
+
+resource "aws_key_pair" "training" {
+  key_name_prefix = "${var.name}-"
+  public_key      = tls_private_key.ssh.public_key_openssh
+
+  tags = {
+    Name = "${var.name}-ssh"
+  }
+}
+
+resource "aws_secretsmanager_secret" "ssh_private_key" {
+  name_prefix             = "${var.name}-ssh-private-key-"
+  description             = "Terraform-generated SSH private key for ${var.name}"
+  kms_key_id              = var.ssh_private_key_kms_key_id
+  recovery_window_in_days = var.ssh_private_key_recovery_window_days
+
+  tags = {
+    Name = "${var.name}-ssh-private-key"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "ssh_private_key" {
+  secret_id     = aws_secretsmanager_secret.ssh_private_key.id
+  secret_string = tls_private_key.ssh.private_key_openssh
+}
+
 data "aws_iam_policy_document" "ec2_assume_role" {
   statement {
     sid     = "Ec2AssumeRole"
@@ -107,15 +136,19 @@ resource "aws_route" "on_premises" {
 
 resource "aws_security_group" "training" {
   name_prefix = "${var.name}-"
-  description = "No-ingress security group for the SSM-managed wake-word trainer"
+  description = "Restricted SSH ingress and outbound access for the wake-word trainer"
   vpc_id      = aws_vpc.this.id
 
-  ingress {
-    description = "All traffic from admin IP"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["136.63.51.188/32"]
+  dynamic "ingress" {
+    for_each = var.ssh_ingress_cidr == null ? [] : [var.ssh_ingress_cidr]
+
+    content {
+      description = "SSH from the explicitly approved administrator CIDR"
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      cidr_blocks = [ingress.value]
+    }
   }
 
   egress {
@@ -236,11 +269,13 @@ resource "aws_instance" "training" {
   subnet_id                   = aws_subnet.outpost.id
   vpc_security_group_ids      = [aws_security_group.training.id]
   iam_instance_profile        = aws_iam_instance_profile.training.name
+  key_name                    = aws_key_pair.training.key_name
   associate_public_ip_address = true
 
   user_data = templatefile("${path.module}/user-data.sh.tftpl", {
     cache_bucket_name = var.cache_bucket_name != null ? var.cache_bucket_name : ""
   })
+  user_data_replace_on_change = true
 
   metadata_options {
     http_endpoint               = "enabled"

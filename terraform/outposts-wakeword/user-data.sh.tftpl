@@ -2,11 +2,13 @@
 set -euo pipefail
 
 CACHE_BUCKET="${cache_bucket_name}"
+export DEBIAN_FRONTEND=noninteractive
 
-install -d -m 0755 /opt/wakeword
-install -d -m 0755 /opt/wakeword/cache
-install -d -m 0755 /opt/wakeword/runs
-install -d -m 0755 /opt/wakeword/artifacts
+install -d -o ubuntu -g ubuntu -m 0755 /opt/wakeword
+install -d -o ubuntu -g ubuntu -m 0755 /opt/wakeword/cache
+install -d -o ubuntu -g ubuntu -m 0755 /opt/wakeword/runs
+install -d -o ubuntu -g ubuntu -m 0755 /opt/wakeword/artifacts
+install -d -o ubuntu -g ubuntu -m 0755 /content
 
 # Deep Learning and current Ubuntu/Amazon Linux AMIs normally include SSM
 # Agent. Enable whichever installation layout the selected AMI provides.
@@ -17,46 +19,70 @@ elif command -v snap >/dev/null 2>&1 &&
   snap start amazon-ssm-agent
 fi
 
-# Sync cached training assets from S3 if a cache bucket is configured.
-if [ -n "$CACHE_BUCKET" ]; then
-  echo "Syncing training assets from s3://$CACHE_BUCKET/content/ ..."
-  aws s3 sync "s3://$CACHE_BUCKET/content/" /content/ --quiet || \
-    echo "WARNING: S3 cache sync failed or bucket is empty; continuing without cache."
-fi
-
 # Install system dependencies for torchaudio/torchcodec.
 # Wait for any background apt/dpkg processes (unattended-upgrades, NVIDIA post-install) to finish.
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
+while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 ||
+      fuser /var/lib/dpkg/lock >/dev/null 2>&1; do
   echo "Waiting for dpkg lock to be released..."
   sleep 5
 done
-apt-get update -qq && apt-get upgrade -y -qq > /dev/null
-apt-get install -y -qq ffmpeg > /dev/null
+
+# Refresh package metadata, but preserve the tested DLAMI package set. Security
+# updates are applied deliberately after validating the resulting GPU/CUDA
+# combination rather than mutating it implicitly during bootstrap.
+apt-get update -qq
+apt-get install -y -qq ffmpeg python3-venv git awscli
+
+# Refuse to publish a ready Jupyter service when the selected image does not
+# expose a working GPU stack.
+nvidia-smi
 
 # Create a virtual environment for JupyterLab (PEP 668 compliance).
-python3 -m venv /opt/wakeword/venv
-/opt/wakeword/venv/bin/pip install --quiet jupyterlab ipywidgets jupyter-resource-usage jupyterlab-execute-time
-/opt/wakeword/venv/bin/pip install --quiet 'setuptools<70' torchcodec soundfile
+runuser -u ubuntu -- python3 -m venv /opt/wakeword/venv
+runuser -u ubuntu -- /opt/wakeword/venv/bin/pip install --quiet --upgrade pip wheel
+runuser -u ubuntu -- /opt/wakeword/venv/bin/pip install --quiet \
+  jupyterlab ipywidgets jupyter-resource-usage jupyterlab-execute-time
+runuser -u ubuntu -- /opt/wakeword/venv/bin/pip install --quiet \
+  'setuptools<70' torchcodec soundfile
 
 # Clone the notebook repository into /content so working directory matches
 # the notebook's Colab-oriented paths.
-install -d -m 0755 /content
-git clone https://github.com/JaredLThompson/LLM_Misc.git /content/LLM_Misc
+if [ -d /content/LLM_Misc/.git ]; then
+  runuser -u ubuntu -- git -C /content/LLM_Misc pull --ff-only
+elif [ -e /content/LLM_Misc ]; then
+  echo "ERROR: /content/LLM_Misc exists but is not a Git checkout." >&2
+  exit 1
+else
+  runuser -u ubuntu -- git clone \
+    https://github.com/JaredLThompson/LLM_Misc.git /content/LLM_Misc
+fi
 ln -sf /content/LLM_Misc/notebooks/*.ipynb /content/
+chown -h ubuntu:ubuntu /content/*.ipynb
+
+# Sync cached training assets after creating the destination. Repository files
+# remain sourced from Git; the cache prefix is intended for large reusable
+# datasets and generated features.
+if [ -n "$CACHE_BUCKET" ]; then
+  echo "Syncing training assets from s3://$CACHE_BUCKET/content/ ..."
+  runuser -u ubuntu -- aws s3 sync \
+    "s3://$CACHE_BUCKET/content/" /content/ --quiet || \
+    echo "WARNING: S3 cache sync failed or bucket is empty; continuing without cache."
+fi
 
 # Set JupyterLab dark mode as default.
-install -d -m 0755 /root/.jupyter/lab/user-settings/@jupyterlab/apputils-extension
-cat > /root/.jupyter/lab/user-settings/@jupyterlab/apputils-extension/themes.jupyterlab-settings <<'EOF'
+install -d -o ubuntu -g ubuntu -m 0755 \
+  /home/ubuntu/.jupyter/lab/user-settings/@jupyterlab/apputils-extension
+cat > /home/ubuntu/.jupyter/lab/user-settings/@jupyterlab/apputils-extension/themes.jupyterlab-settings <<'EOF'
 {
     "theme": "JupyterLab Dark"
 }
 EOF
 
 # Enable CPU tracking for jupyter-resource-usage.
-install -d -m 0755 /root/.jupyter
-cat > /root/.jupyter/jupyter_server_config.py <<'EOF'
+cat > /home/ubuntu/.jupyter/jupyter_server_config.py <<'EOF'
 c.ResourceUseDisplay.track_cpu_percent = True
 EOF
+chown -R ubuntu:ubuntu /home/ubuntu/.jupyter
 
 # Create a systemd unit so Jupyter survives reboots and is manageable.
 cat > /etc/systemd/system/jupyter.service <<'EOF'
@@ -67,17 +93,20 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/content
 ExecStart=/opt/wakeword/venv/bin/jupyter lab \
-  --ip=0.0.0.0 \
+  --ip=127.0.0.1 \
   --port=8888 \
   --no-browser \
-  --allow-root \
   --ServerApp.token='' \
   --ServerApp.password='' \
   --notebook-dir=/content
 Restart=on-failure
 RestartSec=5
 Environment="PATH=/opt/wakeword/venv/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/home/ubuntu"
 
 [Install]
 WantedBy=multi-user.target
@@ -85,3 +114,5 @@ EOF
 
 systemctl daemon-reload
 systemctl enable --now jupyter
+touch /opt/wakeword/bootstrap-complete
+chown ubuntu:ubuntu /opt/wakeword/bootstrap-complete
